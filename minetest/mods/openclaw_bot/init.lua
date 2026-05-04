@@ -1,5 +1,5 @@
 -- OpenClaw Bot Mod for Minetest
--- Agents use velocity for movement, physics handles gravity
+-- Simple: physical=false, set_pos for movement, find ground for Y
 
 local BRIDGE_URL = "http://bridge:8080/api"
 local POLL_INTERVAL = 0.5
@@ -32,10 +32,26 @@ local function get_player_pos()
     return nil
 end
 
-local function is_valid_ref(obj_ref)
-    if not obj_ref then return false end
-    local ok, pos = pcall(function() return obj_ref:get_pos() end)
+local function is_valid_ref(ref)
+    if not ref then return false end
+    local ok, pos = pcall(function() return ref:get_pos() end)
     return ok and pos ~= nil
+end
+
+local function find_ground_y(x, z, fallback_y)
+    -- In flat terrain, just use player's Y as ground level
+    local ppos = get_player_pos()
+    if ppos then
+        return math.floor(ppos.y)
+    end
+    -- No player: scan downward
+    for y = 30, 0, -1 do
+        local node = minetest.get_node({x = math.floor(x), y = y, z = math.floor(z)})
+        if node.name ~= "air" and node.name ~= "ignore" then
+            return y
+        end
+    end
+    return fallback_y or 10
 end
 
 local function spawn_agent(agent_id, pos)
@@ -57,12 +73,16 @@ local function ensure_agent(agent_id)
 
     local ppos = get_player_pos()
     local offset = AGENT_OFFSETS[agent_id] or {x = math.random(-3, 3), z = math.random(-3, 3)}
-    local pos
+    local x, z
     if ppos then
-        pos = {x = math.floor(ppos.x) + offset.x, y = math.floor(ppos.y) + 1, z = math.floor(ppos.z) + offset.z}
+        x = math.floor(ppos.x) + offset.x
+        z = math.floor(ppos.z) + offset.z
     else
-        pos = {x = offset.x, y = 11, z = offset.z}
+        x = offset.x
+        z = offset.z
     end
+    local y = find_ground_y(x, z)
+    local pos = {x = x, y = y, z = z}
 
     local obj = spawn_agent(agent_id, pos)
     if obj then
@@ -89,8 +109,8 @@ minetest.register_entity("openclaw_bot:agent", {
         visual_size = {x = 1, y = 1},
         collisionbox = {-0.3, 0, -0.3, 0.3, 1.7, 0.3},
         hp_max = 20,
-        physical = true,
-        collide_with_objects = true,
+        physical = false,
+        collide_with_objects = false,
         static_save = false,
     },
     agent_id = "",
@@ -134,7 +154,7 @@ local function execute_command(agent_id, cmd)
     if cmd.action == "move" then
         local t = cmd.target
         if t and t.x and t.y and t.z then
-            a.target_pos = {x = t.x, y = t.y, z = t.z}
+            a.target_pos = {x = t.x, y = find_ground_y(t.x, t.z), z = t.z}
         end
 
     elseif cmd.action == "teleport" then
@@ -142,10 +162,10 @@ local function execute_command(agent_id, cmd)
         if t and t.x and t.y and t.z then
             a.target_pos = nil
             a.is_moving = false
+            local pos = {x = t.x, y = find_ground_y(t.x, t.z), z = t.z}
+            a.pos = pos
             if a.obj_ref then
-                pcall(function()
-                    a.obj_ref:set_pos({x = t.x, y = t.y, z = t.z})
-                end)
+                pcall(function() a.obj_ref:set_pos(pos) end)
             end
         end
 
@@ -188,7 +208,7 @@ local function execute_command(agent_id, cmd)
 end
 
 ---------------------------------------------------------------
--- Global step: velocity-based movement, physics handles Y
+-- Global step: simple set_pos movement on X/Z, Y = ground
 ---------------------------------------------------------------
 local report_timer = 0
 
@@ -196,12 +216,15 @@ minetest.register_globalstep(function(dtime)
     report_timer = report_timer + dtime
 
     for agent_id, a in pairs(agents) do
-        -- Respawn if entity lost
+        -- Respawn if lost
         if not is_valid_ref(a.obj_ref) then
             local ppos = get_player_pos()
             if ppos then
                 local offset = AGENT_OFFSETS[agent_id] or {x = 0, z = 0}
-                local pos = {x = math.floor(ppos.x) + offset.x, y = math.floor(ppos.y) + 1, z = math.floor(ppos.z) + offset.z}
+                local x = math.floor(ppos.x) + offset.x
+                local z = math.floor(ppos.z) + offset.z
+                local y = find_ground_y(x, z)
+                local pos = {x = x, y = y, z = z}
                 local obj = spawn_agent(agent_id, pos)
                 if obj then
                     a.obj_ref = obj
@@ -210,50 +233,33 @@ minetest.register_globalstep(function(dtime)
             end
         end
 
-        -- Read actual position from entity (physics controls Y)
-        if a.obj_ref then
-            local ok, epos = pcall(function() return a.obj_ref:get_pos() end)
-            if ok and epos then
-                a.pos = epos
-            end
-        end
+        -- Movement: set_pos on X/Z, Y follows ground
+        if a.target_pos and a.obj_ref then
+            local dx = a.target_pos.x - a.pos.x
+            local dz = a.target_pos.z - a.pos.z
+            local dist = math.sqrt(dx * dx + dz * dz)
 
-        -- Movement via velocity only on X/Z plane, preserve Y for gravity
-        if a.target_pos then
-            local flat_pos = {x = a.pos.x, y = 0, z = a.pos.z}
-            local flat_tgt = {x = a.target_pos.x, y = 0, z = a.target_pos.z}
-            local dist = vector.distance(flat_pos, flat_tgt)
             if dist < 0.5 then
+                a.pos = {x = a.target_pos.x, y = a.target_pos.y, z = a.target_pos.z}
                 a.target_pos = nil
                 a.is_moving = false
-                if a.obj_ref then
-                    pcall(function()
-                        local vy = a.obj_ref:get_velocity().y
-                        a.obj_ref:set_velocity({x = 0, y = vy, z = 0})
-                        a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
-                    end)
-                end
+                pcall(function()
+                    a.obj_ref:set_pos(a.pos)
+                    a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
+                end)
             else
-                local dir = vector.direction(flat_pos, flat_tgt)
-                a.facing = {x = dir.x, z = dir.z}
+                local dir_x = dx / dist
+                local dir_z = dz / dist
+                local nx = a.pos.x + dir_x * MOVE_SPEED * dtime
+                local nz = a.pos.z + dir_z * MOVE_SPEED * dtime
+                local ny = find_ground_y(nx, nz)
+                a.pos = {x = nx, y = ny, z = nz}
+                a.facing = {x = dir_x, z = dir_z}
                 a.is_moving = true
-                if a.obj_ref then
-                    pcall(function()
-                        local vy = a.obj_ref:get_velocity().y
-                        a.obj_ref:set_velocity({x = dir.x * MOVE_SPEED, y = vy, z = dir.z * MOVE_SPEED})
-                        a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
-                    end)
-                end
-            end
-        else
-            if a.is_moving then
-                a.is_moving = false
-                if a.obj_ref then
-                    pcall(function()
-                        local vy = a.obj_ref:get_velocity().y
-                        a.obj_ref:set_velocity({x = 0, y = vy, z = 0})
-                    end)
-                end
+                pcall(function()
+                    a.obj_ref:set_pos(a.pos)
+                    a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
+                end)
             end
         end
 
