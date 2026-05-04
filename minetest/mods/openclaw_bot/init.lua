@@ -235,7 +235,7 @@ minetest.register_globalstep(function(dtime)
                 a.facing = {x = dir_x, z = dir_z}
                 a.is_moving = true
                 -- Face movement direction
-                a.obj_ref:set_yaw(math.atan2(dir_z, dir_x))
+                a.obj_ref:set_yaw(math.atan2(dx, dz))
                 a.obj_ref:set_velocity({x = dir_x * MOVE_SPEED, y = 0, z = dir_z * MOVE_SPEED})
                 a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
             end

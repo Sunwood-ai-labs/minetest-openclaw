@@ -90,31 +90,46 @@ while True:
     pos = pos.get("pos", {}) if isinstance(pos.get("pos"), dict) else {}
 
     px, py, pz = pos.get('x', 0), pos.get('y', 10), pos.get('z', 0)
-    # Randomize action order to vary behavior
     import random
     dx = random.randint(-8, 8)
     dz = random.randint(-8, 8)
     prompt = (
         f"{identity}\n"
         f"現在地: x={px} y={py} z={pz}\n"
-        f"以下の2つのアクションを交互に実行せよ。チャット禁止。\n\n"
-        f"移動アクション:\n"
-        f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/move -H 'Content-Type: application/json' "
-        f"-d '{{\"target\":{{\"x\":{px+dx},\"y\":{py},\"z\":{pz+dz}}}}}'\n\n"
-        f"建築アクション:\n"
-        f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/place -H 'Content-Type: application/json' "
+        f"以下の2つのcurlコマンドを両方出力せよ（1行に1つ）:\n\n"
+        f"1. チャット（自分の言葉で日本語で発言）:\n"
+        f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/chat -H 'Content-Type: application/json' "
+        f"-d '{{\"message\":\"ここに発言\"}}'\n\n"
+        f"2. 移動または建築（どちらか選ぶ）:\n"
+        f"移動: curl -s -X POST {BRIDGE}/do/{AGENT_ID}/move -H 'Content-Type: application/json' "
+        f"-d '{{\"target\":{{\"x\":{px+dx},\"y\":{py},\"z\":{pz+dz}}}}}'\n"
+        f"建築: curl -s -X POST {BRIDGE}/do/{AGENT_ID}/place -H 'Content-Type: application/json' "
         f"-d '{{\"pos\":{{\"x\":{px},\"y\":{py+1},\"z\":{pz}}},\"node\":\"default:stone\"}}'\n\n"
-        f"上記のどちらか1つをそのまま出力せよ。他のテキストは一切不要。"
+        f"必ず2つのcurlコマンドを出力。他のテキストは不要。"
     )
 
     text = ask_llm(prompt)
-    cmd = extract_cmd(text) if text else None
+    # Extract ALL curl commands, not just one
+    cmds = []
+    if text:
+        for line in text.split("\n"):
+            line = line.strip().strip("`").strip("*").strip()
+            if "curl" in line and "localhost" in line:
+                cmds.append(line)
 
-    if cmd:
-        print(f"[{AGENT_ID}] > {cmd}")
-        result = run_cmd(cmd)
-        if result:
-            print(f"[{AGENT_ID}]   {result}")
+    if cmds:
+        for cmd in cmds:
+            print(f"[{AGENT_ID}] > {cmd}")
+            result = run_cmd(cmd)
+            if result:
+                print(f"[{AGENT_ID}]   {result}")
+    else:
+        # Fallback: always move + chat
+        move_cmd = f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/move -H 'Content-Type: application/json' -d '{{\"target\":{{\"x\":{px+dx},\"y\":{py},\"z\":{pz+dz}}}}}'"
+        chat_cmd = f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/chat -H 'Content-Type: application/json' -d '{{\"message\":\"...\"}}'"
+        run_cmd(move_cmd)
+        run_cmd(chat_cmd)
+        print(f"[{AGENT_ID}] (fallback actions)")
     else:
         print(f"[{AGENT_ID}] (thinking...)")
 
