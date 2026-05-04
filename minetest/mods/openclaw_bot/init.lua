@@ -1,10 +1,9 @@
 -- OpenClaw Bot Mod for Minetest
--- Agents follow players and stay in loaded chunks
+-- Agents use velocity for movement, physics handles gravity
 
 local BRIDGE_URL = "http://bridge:8080/api"
 local POLL_INTERVAL = 0.5
 local MOVE_SPEED = 4.0
-local SPAWN_RADIUS = 5
 
 local http = minetest.request_http_api()
 if not http then
@@ -56,7 +55,6 @@ local function ensure_agent(agent_id)
         return a
     end
 
-    -- Respawn near player
     local ppos = get_player_pos()
     local offset = AGENT_OFFSETS[agent_id] or {x = math.random(-3, 3), z = math.random(-3, 3)}
     local pos
@@ -143,10 +141,11 @@ local function execute_command(agent_id, cmd)
         local t = cmd.target
         if t and t.x and t.y and t.z then
             a.target_pos = nil
-            a.pos = {x = t.x, y = t.y, z = t.z}
             a.is_moving = false
             if a.obj_ref then
-                pcall(function() a.obj_ref:set_pos(a.pos) end)
+                pcall(function()
+                    a.obj_ref:set_pos({x = t.x, y = t.y, z = t.z})
+                end)
             end
         end
 
@@ -189,7 +188,7 @@ local function execute_command(agent_id, cmd)
 end
 
 ---------------------------------------------------------------
--- Global step
+-- Global step: velocity-based movement, physics handles Y
 ---------------------------------------------------------------
 local report_timer = 0
 
@@ -197,7 +196,7 @@ minetest.register_globalstep(function(dtime)
     report_timer = report_timer + dtime
 
     for agent_id, a in pairs(agents) do
-        -- Check entity validity, respawn if needed near player
+        -- Respawn if entity lost
         if not is_valid_ref(a.obj_ref) then
             local ppos = get_player_pos()
             if ppos then
@@ -211,7 +210,7 @@ minetest.register_globalstep(function(dtime)
             end
         end
 
-        -- Sync position from entity
+        -- Read actual position from entity (physics controls Y)
         if a.obj_ref then
             local ok, epos = pcall(function() return a.obj_ref:get_pos() end)
             if ok and epos then
@@ -219,35 +218,46 @@ minetest.register_globalstep(function(dtime)
             end
         end
 
-        -- Handle movement
+        -- Movement via velocity only on X/Z plane, preserve Y for gravity
         if a.target_pos then
-            local dist = vector.distance(a.pos, a.target_pos)
+            local flat_pos = {x = a.pos.x, y = 0, z = a.pos.z}
+            local flat_tgt = {x = a.target_pos.x, y = 0, z = a.target_pos.z}
+            local dist = vector.distance(flat_pos, flat_tgt)
             if dist < 0.5 then
-                a.pos = {x = a.target_pos.x, y = a.target_pos.y, z = a.target_pos.z}
                 a.target_pos = nil
                 a.is_moving = false
                 if a.obj_ref then
                     pcall(function()
-                        a.obj_ref:set_pos(a.pos)
+                        local vy = a.obj_ref:get_velocity().y
+                        a.obj_ref:set_velocity({x = 0, y = vy, z = 0})
                         a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
                     end)
                 end
             else
-                local dir = vector.direction(a.pos, a.target_pos)
-                local step = vector.multiply(dir, MOVE_SPEED * dtime)
-                a.pos = vector.add(a.pos, step)
+                local dir = vector.direction(flat_pos, flat_tgt)
                 a.facing = {x = dir.x, z = dir.z}
                 a.is_moving = true
                 if a.obj_ref then
                     pcall(function()
-                        a.obj_ref:set_pos(a.pos)
+                        local vy = a.obj_ref:get_velocity().y
+                        a.obj_ref:set_velocity({x = dir.x * MOVE_SPEED, y = vy, z = dir.z * MOVE_SPEED})
                         a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
+                    end)
+                end
+            end
+        else
+            if a.is_moving then
+                a.is_moving = false
+                if a.obj_ref then
+                    pcall(function()
+                        local vy = a.obj_ref:get_velocity().y
+                        a.obj_ref:set_velocity({x = 0, y = vy, z = 0})
                     end)
                 end
             end
         end
 
-        -- Periodic state report
+        -- State report
         if report_timer >= 1.0 then
             http.fetch({
                 url = BRIDGE_URL .. "/state/" .. agent_id,
