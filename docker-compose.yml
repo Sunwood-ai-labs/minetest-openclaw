@@ -1,0 +1,29 @@
+services:
+  minetest:
+    image: ghcr.io/minetest/minetest:latest
+    platform: linux/amd64
+    container_name: minetest-server
+    ports:
+      - "30000:30000/udp"
+      - "30000:30000/tcp"
+    volumes:
+      - minetest-data:/var/lib/minetest/.minetest
+      - ./minetest/games/minetest_game:/var/lib/minetest/.minetest/games/minetest_game
+      - ./minetest/mods/openclaw_bot:/var/lib/minetest/.minetest/mods/openclaw_bot
+      - ./config/minetest.conf:/etc/minetest/minetest.conf
+    command: ["--config", "/etc/minetest/minetest.conf", "--gameid", "minetest"]
+    depends_on:
+      - bridge
+    restart: unless-stopped
+
+  bridge:
+    build: ./bridge
+    container_name: minetest-bridge
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+
+volumes:
+  minetest-data:

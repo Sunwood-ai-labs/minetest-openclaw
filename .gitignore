@@ -1,0 +1,7 @@
+.env
+node_modules/
+*.log
+__pycache__/
+.DS_Store
+tmp/
+minetest/games/minetest_game/

@@ -1,0 +1,12 @@
+{
+  "name": "minetest-openclaw-bridge",
+  "version": "0.1.0",
+  "description": "HTTP bridge between OpenClaw agents and Minetest world",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
