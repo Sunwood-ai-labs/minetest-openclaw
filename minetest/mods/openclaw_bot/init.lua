@@ -92,8 +92,8 @@ minetest.register_entity("openclaw_bot:agent", {
         visual_size = {x = 1, y = 1},
         collisionbox = {-0.3, 0, -0.3, 0.3, 1.7, 0.3},
         hp_max = 20,
-        physical = false,
-        collide_with_objects = false,
+        physical = true,
+        collide_with_objects = true,
         static_save = false,
     },
     agent_id = "",
@@ -218,25 +218,25 @@ minetest.register_globalstep(function(dtime)
             goto continue
         end
 
-        -- Movement: set_pos on X/Z, keep player Y
+        -- Movement: set_velocity on X/Z, set_yaw for facing
         if a.target_pos then
             local pos = a.obj_ref:get_pos()
             local dx = a.target_pos.x - pos.x
             local dz = a.target_pos.z - pos.z
             local dist = math.sqrt(dx * dx + dz * dz)
-            local player = get_player()
-            local gy = player and player:get_pos().y or pos.y
             if dist < 0.5 then
-                a.obj_ref:set_pos({x = a.target_pos.x, y = gy, z = a.target_pos.z})
                 a.target_pos = nil
                 a.is_moving = false
+                a.obj_ref:set_velocity({x = 0, y = 0, z = 0})
                 a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
             else
-                local nx = pos.x + (dx / dist) * MOVE_SPEED * dtime
-                local nz = pos.z + (dz / dist) * MOVE_SPEED * dtime
-                a.facing = {x = dx / dist, z = dz / dist}
+                local dir_x = dx / dist
+                local dir_z = dz / dist
+                a.facing = {x = dir_x, z = dir_z}
                 a.is_moving = true
-                a.obj_ref:set_pos({x = nx, y = gy, z = nz})
+                -- Face movement direction
+                a.obj_ref:set_yaw(math.atan2(dir_z, dir_x))
+                a.obj_ref:set_velocity({x = dir_x * MOVE_SPEED, y = 0, z = dir_z * MOVE_SPEED})
                 a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
             end
         end
