@@ -1,5 +1,5 @@
 -- OpenClaw Bot Mod for Minetest
--- Simple: physical=false, set_pos for movement, find ground for Y
+-- physical=true, gravity handles Y, velocity for movement
 
 local BRIDGE_URL = "http://bridge:8080/api"
 local POLL_INTERVAL = 0.5
@@ -38,22 +38,6 @@ local function is_valid_ref(ref)
     return ok and pos ~= nil
 end
 
-local function find_ground_y(x, z, fallback_y)
-    -- In flat terrain, just use player's Y as ground level
-    local ppos = get_player_pos()
-    if ppos then
-        return math.floor(ppos.y)
-    end
-    -- No player: scan downward
-    for y = 30, 0, -1 do
-        local node = minetest.get_node({x = math.floor(x), y = y, z = math.floor(z)})
-        if node.name ~= "air" and node.name ~= "ignore" then
-            return y
-        end
-    end
-    return fallback_y or 10
-end
-
 local function spawn_agent(agent_id, pos)
     local obj = minetest.add_entity(pos, "openclaw_bot:agent", agent_id)
     if obj then
@@ -73,21 +57,16 @@ local function ensure_agent(agent_id)
 
     local ppos = get_player_pos()
     local offset = AGENT_OFFSETS[agent_id] or {x = math.random(-3, 3), z = math.random(-3, 3)}
-    local x, z
+    local pos
     if ppos then
-        x = math.floor(ppos.x) + offset.x
-        z = math.floor(ppos.z) + offset.z
+        pos = {x = ppos.x + offset.x, y = ppos.y + 2, z = ppos.z + offset.z}
     else
-        x = offset.x
-        z = offset.z
+        pos = {x = offset.x, y = 12, z = offset.z}
     end
-    local y = find_ground_y(x, z)
-    local pos = {x = x, y = y, z = z}
 
     local obj = spawn_agent(agent_id, pos)
     if obj then
         agents[agent_id] = {
-            pos = pos,
             target_pos = nil,
             is_moving = false,
             facing = {x = 0, z = 1},
@@ -109,8 +88,8 @@ minetest.register_entity("openclaw_bot:agent", {
         visual_size = {x = 1, y = 1},
         collisionbox = {-0.3, 0, -0.3, 0.3, 1.7, 0.3},
         hp_max = 20,
-        physical = false,
-        collide_with_objects = false,
+        physical = true,
+        collide_with_objects = true,
         static_save = false,
     },
     agent_id = "",
@@ -135,7 +114,6 @@ minetest.register_entity("openclaw_bot:agent", {
             return
         end
         agents[self.agent_id] = {
-            pos = self.object:get_pos(),
             target_pos = a and a.target_pos or nil,
             is_moving = false,
             facing = {x = 0, z = 1},
@@ -154,7 +132,7 @@ local function execute_command(agent_id, cmd)
     if cmd.action == "move" then
         local t = cmd.target
         if t and t.x and t.y and t.z then
-            a.target_pos = {x = t.x, y = find_ground_y(t.x, t.z), z = t.z}
+            a.target_pos = {x = t.x, y = t.y, z = t.z}
         end
 
     elseif cmd.action == "teleport" then
@@ -162,19 +140,19 @@ local function execute_command(agent_id, cmd)
         if t and t.x and t.y and t.z then
             a.target_pos = nil
             a.is_moving = false
-            local pos = {x = t.x, y = find_ground_y(t.x, t.z), z = t.z}
-            a.pos = pos
             if a.obj_ref then
-                pcall(function() a.obj_ref:set_pos(pos) end)
+                pcall(function() a.obj_ref:set_pos({x = t.x, y = t.y, z = t.z}) end)
             end
         end
 
     elseif cmd.action == "dig" then
-        local p = cmd.pos or {x = math.floor(a.pos.x), y = math.floor(a.pos.y), z = math.floor(a.pos.z)}
+        local pos = a.obj_ref and a.obj_ref:get_pos() or {x = 0, y = 0, z = 0}
+        local p = cmd.pos or {x = math.floor(pos.x), y = math.floor(pos.y), z = math.floor(pos.z)}
         minetest.remove_node(p)
 
     elseif cmd.action == "place" then
-        local p = cmd.pos or {x = math.floor(a.pos.x), y = math.floor(a.pos.y) + 1, z = math.floor(a.pos.z)}
+        local pos = a.obj_ref and a.obj_ref:get_pos() or {x = 0, y = 0, z = 0}
+        local p = cmd.pos or {x = math.floor(pos.x), y = math.floor(pos.y) + 1, z = math.floor(pos.z)}
         minetest.set_node(p, {name = cmd.node or "default:stone"})
 
     elseif cmd.action == "chat" then
@@ -184,8 +162,7 @@ local function execute_command(agent_id, cmd)
         minetest.set_timeofday(cmd.time or 0.5)
 
     elseif cmd.action == "look" then
-        local pos = a.pos
-        if not pos then return end
+        local pos = a.obj_ref and a.obj_ref:get_pos() or {x = 0, y = 0, z = 0}
         local surroundings = {}
         for dx = -2, 2 do
             for dy = -1, 2 do
@@ -208,7 +185,7 @@ local function execute_command(agent_id, cmd)
 end
 
 ---------------------------------------------------------------
--- Global step: simple set_pos movement on X/Z, Y = ground
+-- Global step: set_velocity for X/Z only, gravity handles Y
 ---------------------------------------------------------------
 local report_timer = 0
 
@@ -221,61 +198,59 @@ minetest.register_globalstep(function(dtime)
             local ppos = get_player_pos()
             if ppos then
                 local offset = AGENT_OFFSETS[agent_id] or {x = 0, z = 0}
-                local x = math.floor(ppos.x) + offset.x
-                local z = math.floor(ppos.z) + offset.z
-                local y = find_ground_y(x, z)
-                local pos = {x = x, y = y, z = z}
+                local pos = {x = ppos.x + offset.x, y = ppos.y + 2, z = ppos.z + offset.z}
                 local obj = spawn_agent(agent_id, pos)
                 if obj then
                     a.obj_ref = obj
-                    a.pos = pos
                 end
             end
         end
 
-        -- Movement: set_pos on X/Z, Y follows ground
-        if a.target_pos and a.obj_ref then
-            local dx = a.target_pos.x - a.pos.x
-            local dz = a.target_pos.z - a.pos.z
-            local dist = math.sqrt(dx * dx + dz * dz)
+        if not a.obj_ref then goto continue end
 
+        local pos = a.obj_ref:get_pos()
+        if not pos then goto continue end
+
+        -- Movement: set_velocity on X/Z, preserve Y for gravity
+        if a.target_pos then
+            local dx = a.target_pos.x - pos.x
+            local dz = a.target_pos.z - pos.z
+            local dist = math.sqrt(dx * dx + dz * dz)
             if dist < 0.5 then
-                a.pos = {x = a.target_pos.x, y = a.target_pos.y, z = a.target_pos.z}
                 a.target_pos = nil
                 a.is_moving = false
-                pcall(function()
-                    a.obj_ref:set_pos(a.pos)
-                    a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
-                end)
+                local vy = a.obj_ref:get_velocity().y
+                a.obj_ref:set_velocity({x = 0, y = vy, z = 0})
+                a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
             else
-                local dir_x = dx / dist
-                local dir_z = dz / dist
-                local nx = a.pos.x + dir_x * MOVE_SPEED * dtime
-                local nz = a.pos.z + dir_z * MOVE_SPEED * dtime
-                local ny = find_ground_y(nx, nz)
-                a.pos = {x = nx, y = ny, z = nz}
-                a.facing = {x = dir_x, z = dir_z}
+                local vx = (dx / dist) * MOVE_SPEED
+                local vz = (dz / dist) * MOVE_SPEED
+                local vy = a.obj_ref:get_velocity().y
+                a.facing = {x = dx / dist, z = dz / dist}
                 a.is_moving = true
-                pcall(function()
-                    a.obj_ref:set_pos(a.pos)
-                    a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
-                end)
+                a.obj_ref:set_velocity({x = vx, y = vy, z = vz})
+                a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
             end
         end
 
         -- State report
         if report_timer >= 1.0 then
-            http.fetch({
-                url = BRIDGE_URL .. "/state/" .. agent_id,
-                method = "POST",
-                data = minetest.write_json({
-                    pos = {x = math.floor(a.pos.x), y = math.floor(a.pos.y), z = math.floor(a.pos.z)},
-                    is_moving = a.is_moving,
-                    facing = a.facing,
-                }),
-                extra_headers = {"Content-Type: application/json"},
-            }, function() end)
+            pos = a.obj_ref:get_pos()
+            if pos then
+                http.fetch({
+                    url = BRIDGE_URL .. "/state/" .. agent_id,
+                    method = "POST",
+                    data = minetest.write_json({
+                        pos = {x = math.floor(pos.x), y = math.floor(pos.y), z = math.floor(pos.z)},
+                        is_moving = a.is_moving,
+                        facing = a.facing,
+                    }),
+                    extra_headers = {"Content-Type: application/json"},
+                }, function() end)
+            end
         end
+
+        ::continue::
     end
 
     -- Report player positions
