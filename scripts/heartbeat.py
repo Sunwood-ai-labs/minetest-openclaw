@@ -89,19 +89,22 @@ while True:
     pos = state.get("state", {}) or {}
     pos = pos.get("pos", {}) if isinstance(pos.get("pos"), dict) else {}
 
-    px, py, pz = pos.get('x', 0), pos.get('y', 2), pos.get('z', 0)
+    px, py, pz = pos.get('x', 0), pos.get('y', 10), pos.get('z', 0)
+    # Randomize action order to vary behavior
+    import random
+    dx = random.randint(-8, 8)
+    dz = random.randint(-8, 8)
     prompt = (
         f"{identity}\n"
-        f"現在地: x={px} y={py} z={pz} (Minetestボクセルワールド)\n"
-        f"毎ターン必ず何か行動してください。\n\n"
-        f"以下のいずれか1つを実行（毎回変えて）:\n"
-        f"1. チャット: curl -s -X POST {BRIDGE}/do/{AGENT_ID}/chat -H 'Content-Type: application/json' "
-        f"-d '{{\"message\":\"日本語で発言\"}}'\n"
-        f"2. 移動: curl -s -X POST {BRIDGE}/do/{AGENT_ID}/move -H 'Content-Type: application/json' "
-        f"-d '{{\"target\":{{\"x\":{px+5},\"y\":{py},\"z\":{pz+5}}}}}'\n"
-        f"3. 建築: curl -s -X POST {BRIDGE}/do/{AGENT_ID}/place -H 'Content-Type: application/json' "
+        f"現在地: x={px} y={py} z={pz}\n"
+        f"以下の2つのアクションを交互に実行せよ。チャット禁止。\n\n"
+        f"移動アクション:\n"
+        f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/move -H 'Content-Type: application/json' "
+        f"-d '{{\"target\":{{\"x\":{px+dx},\"y\":{py},\"z\":{pz+dz}}}}}'\n\n"
+        f"建築アクション:\n"
+        f"curl -s -X POST {BRIDGE}/do/{AGENT_ID}/place -H 'Content-Type: application/json' "
         f"-d '{{\"pos\":{{\"x\":{px},\"y\":{py+1},\"z\":{pz}}},\"node\":\"default:stone\"}}'\n\n"
-        f"lookは選ばないこと。curlコマンド1つだけ出力。メッセージは日本語で。"
+        f"上記のどちらか1つをそのまま出力せよ。他のテキストは一切不要。"
     )
 
     text = ask_llm(prompt)
