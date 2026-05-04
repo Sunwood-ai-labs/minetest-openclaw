@@ -1,5 +1,5 @@
 -- OpenClaw Bot Mod for Minetest
--- physical=false, manual ground snapping for Y
+-- physical=true, NEVER use set_pos after spawn, velocity only
 
 local BRIDGE_URL = "http://bridge:8080/api"
 local POLL_INTERVAL = 0.5
@@ -38,25 +38,12 @@ local function is_valid_ref(ref)
     return ok and pos ~= nil
 end
 
--- Find the Y position where feet should be (matching player Y)
-local function ground_y(x, z)
-    local px = math.floor(x + 0.5)
-    local pz = math.floor(z + 0.5)
-    for y = 30, 0, -1 do
-        local node = minetest.get_node({x = px, y = y, z = pz})
-        if node.name ~= "air" and node.name ~= "ignore" then
-            return y
-        end
-    end
-    return 10
-end
-
 local function spawn_agent(agent_id, pos)
     local obj = minetest.add_entity(pos, "openclaw_bot:agent", agent_id)
     if obj then
         local tex = AGENT_TEXTURES[agent_id] or {"character.png"}
         obj:set_properties({textures = tex})
-        minetest.log("action", "[openclaw_bot] Spawned: " .. agent_id .. " at " .. minetest.pos_to_string(pos))
+        minetest.log("action", "[openclaw_bot] Spawned: " .. agent_id .. " at y=" .. pos.y)
         return obj
     end
     return nil
@@ -70,19 +57,18 @@ local function ensure_agent(agent_id)
 
     local player = get_player()
     local offset = AGENT_OFFSETS[agent_id] or {x = math.random(-3, 3), z = math.random(-3, 3)}
-    local x, z
+    local x, z, y
     if player then
         local ppos = player:get_pos()
         x = ppos.x + offset.x
         z = ppos.z + offset.z
+        y = ppos.y
     else
         x = offset.x
         z = offset.z
+        y = 10.5
     end
-    local y = ground_y(x, z)
-    local pos = {x = x, y = y, z = z}
-
-    local obj = spawn_agent(agent_id, pos)
+    local obj = spawn_agent(agent_id, {x = x, y = y, z = z})
     if obj then
         agents[agent_id] = {
             target_pos = nil,
@@ -141,7 +127,7 @@ minetest.register_entity("openclaw_bot:agent", {
 })
 
 ---------------------------------------------------------------
--- Command execution
+-- Command execution - teleport removes and respawns
 ---------------------------------------------------------------
 local function execute_command(agent_id, cmd)
     local a = ensure_agent(agent_id)
@@ -150,7 +136,7 @@ local function execute_command(agent_id, cmd)
     if cmd.action == "move" then
         local t = cmd.target
         if t and t.x and t.y and t.z then
-            a.target_pos = {x = t.x, y = ground_y(t.x, t.z), z = t.z}
+            a.target_pos = {x = t.x, y = t.y, z = t.z}
         end
 
     elseif cmd.action == "teleport" then
@@ -158,10 +144,14 @@ local function execute_command(agent_id, cmd)
         if t and t.x and t.y and t.z then
             a.target_pos = nil
             a.is_moving = false
-            local y = ground_y(t.x, t.z)
-            local pos = {x = t.x, y = y, z = t.z}
             if a.obj_ref then
-                pcall(function() a.obj_ref:set_pos(pos) end)
+                pcall(function() a.obj_ref:remove() end)
+            end
+            local player = get_player()
+            local y = player and player:get_pos().y or 10.5
+            local obj = spawn_agent(agent_id, {x = t.x, y = y, z = t.z})
+            if obj then
+                a.obj_ref = obj
             end
         end
 
@@ -169,9 +159,6 @@ local function execute_command(agent_id, cmd)
         local pos = a.obj_ref:get_pos()
         local p = cmd.pos or {x = math.floor(pos.x), y = math.floor(pos.y), z = math.floor(pos.z)}
         minetest.remove_node(p)
-        -- Snap agent to new ground level
-        local new_y = ground_y(pos.x, pos.z)
-        a.obj_ref:set_pos({x = pos.x, y = new_y, z = pos.z})
 
     elseif cmd.action == "place" then
         local pos = a.obj_ref:get_pos()
@@ -209,7 +196,7 @@ local function execute_command(agent_id, cmd)
 end
 
 ---------------------------------------------------------------
--- Global step: set_pos movement, snap Y to ground
+-- Global step: velocity only, never set_pos
 ---------------------------------------------------------------
 local report_timer = 0
 
@@ -223,10 +210,7 @@ minetest.register_globalstep(function(dtime)
             if player then
                 local ppos = player:get_pos()
                 local offset = AGENT_OFFSETS[agent_id] or {x = 0, z = 0}
-                local x = ppos.x + offset.x
-                local z = ppos.z + offset.z
-                local y = ground_y(x, z)
-                local obj = spawn_agent(agent_id, {x = x, y = y, z = z})
+                local obj = spawn_agent(agent_id, {x = ppos.x + offset.x, y = ppos.y, z = ppos.z + offset.z})
                 if obj then
                     a.obj_ref = obj
                 end
@@ -234,24 +218,25 @@ minetest.register_globalstep(function(dtime)
             goto continue
         end
 
-        -- Movement: move on X/Z, snap Y to ground
+        -- Movement: set_pos on X/Z, keep player Y
         if a.target_pos then
             local pos = a.obj_ref:get_pos()
             local dx = a.target_pos.x - pos.x
             local dz = a.target_pos.z - pos.z
             local dist = math.sqrt(dx * dx + dz * dz)
+            local player = get_player()
+            local gy = player and player:get_pos().y or pos.y
             if dist < 0.5 then
-                a.obj_ref:set_pos({x = a.target_pos.x, y = a.target_pos.y, z = a.target_pos.z})
+                a.obj_ref:set_pos({x = a.target_pos.x, y = gy, z = a.target_pos.z})
                 a.target_pos = nil
                 a.is_moving = false
                 a.obj_ref:set_animation({x = 0, y = 79}, 30, 0, true)
             else
                 local nx = pos.x + (dx / dist) * MOVE_SPEED * dtime
                 local nz = pos.z + (dz / dist) * MOVE_SPEED * dtime
-                local ny = ground_y(nx, nz)
                 a.facing = {x = dx / dist, z = dz / dist}
                 a.is_moving = true
-                a.obj_ref:set_pos({x = nx, y = ny, z = nz})
+                a.obj_ref:set_pos({x = nx, y = gy, z = nz})
                 a.obj_ref:set_animation({x = 168, y = 187}, 30, 0, true)
             end
         end
